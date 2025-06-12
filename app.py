@@ -1,19 +1,28 @@
-import os
+import sys
+import time
+import asyncio
 import logging
-import sqlite3
-from flask import Flask, request, jsonify
 import requests
+import sqlite3
+import os
+from flask import Flask, request, jsonify
+from telegram import Bot
 
 app = Flask(__name__)
 
 BOT_TOKEN = '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s'
 OWNER_ID = 6746140279  # Admin ID for notifications
+bot = Bot(token=BOT_TOKEN)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize database
-conn = sqlite3.connect("users.db", check_same_thread=False)
+# Ensure /data directory exists
+os.makedirs("data", exist_ok=True)
+
+# Use a shared SQLite DB file
+DB_PATH = os.path.join("data", "users.db")
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
 conn.commit()
@@ -23,10 +32,8 @@ def add_balance(user_id: int, amount: float):
     result = cursor.fetchone()
     if result is None:
         cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
-        print(f"[DB] New user {user_id} added with ${amount}")
     else:
         cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        print(f"[DB] User {user_id} balance increased by ${amount}")
     conn.commit()
 
 @app.route('/nowpayments_callback', methods=['POST'])
@@ -53,30 +60,18 @@ def nowpayments_callback():
         add_balance(user_id, amount)
 
         # Notify admin
-        requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            params={
-                "chat_id": OWNER_ID,
-                "text": f"\U0001f4b8 Deposit of ${amount:.2f} received from user ID {user_id}!"
-            }
-        )
+        try:
+            bot.send_message(chat_id=OWNER_ID, text=f"💸 Deposit of ${amount:.2f} received from user ID {user_id}!")
+        except Exception as e:
+            logger.error(f"Failed to notify admin: {e}")
 
         # Notify user
-        requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            params={
-                "chat_id": user_id,
-                "text": f"\u2705 Your deposit of ${amount:.2f} was successful and has been added to your balance!"
-            }
-        )
+        try:
+            bot.send_message(chat_id=user_id, text=f"✅ Your deposit of ${amount:.2f} was successful and has been added to your balance!")
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id}: {e}")
 
     return jsonify({"status": "ok"})
-
-@app.route('/debug_balance/<int:user_id>')
-def debug_balance(user_id):
-    cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    return jsonify({"user_id": user_id, "balance": result[0] if result else 0.0})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
