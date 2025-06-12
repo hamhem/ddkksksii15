@@ -4,7 +4,7 @@ import os
 import asyncio
 import logging
 import requests
-import sqlite3
+import psycopg2
 from contextlib import contextmanager
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,13 +16,12 @@ from telegram.error import BadRequest
 if sys.platform.startswith('win'):
     import nest_asyncio
     nest_asyncio.apply()
-    
-print("BOT DB EXISTS:", os.path.exists("/data/users.db"))
 
-BOT_TOKEN = '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s'
-NOWPAYMENTS_API_KEY = '30ZYG00-WCM4EGC-Q7Y4QSS-28GQ865'
-OWNER_ID = 6746140279
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s')
+NOWPAYMENTS_API_KEY = os.getenv('NOWPAYMENTS_API_KEY', '30ZYG00-WCM4EGC-Q7Y4QSS-28GQ865')
+OWNER_ID = int(os.getenv('OWNER_ID', '6746140279'))
 CHANNEL_ID = '@PayToChat'
+DATABASE_URL = os.getenv('DATABASE_URL')  # PostgreSQL URL from Render
 
 ASK_AMOUNT, ASK_CURRENCY, ASK_MESSAGE = range(3)
 MIN_DEPOSIT = 0.5
@@ -34,29 +33,17 @@ PRICE_LIST = {
     "video": 0.40
 }
 CURRENCIES = [
-    ("Bitcoin", "btc"),
-    ("Ethereum", "eth"),
-    ("Litecoin", "ltc"),
-    ("BNB", "bnb"),
-    ("Solana", "sol"),
-    ("Tron", "trx"),
-    ("Toncoin", "ton"),
-    ("Monero", "xmr"),
-    ("USDC", "usdc"),
-    ("DAI", "dai")
+    ("Bitcoin", "btc"), ("Ethereum", "eth"), ("Litecoin", "ltc"), ("BNB", "bnb"),
+    ("Solana", "sol"), ("Tron", "trx"), ("Toncoin", "ton"), ("Monero", "xmr"),
+    ("USDC", "usdc"), ("DAI", "dai")
 ]
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Database Configuration
-DB_PATH = "/data/users.db"
-
 @contextmanager
 def db_connection():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout = 30000")
+    conn = psycopg2.connect(DATABASE_URL)
     try:
         yield conn
     finally:
@@ -64,47 +51,42 @@ def db_connection():
 
 def init_db():
     with db_connection() as conn:
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS balances (
-            user_id INTEGER PRIMARY KEY,
-            balance REAL NOT NULL DEFAULT 0.0
-        )
-        """)
-        conn.commit()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS balances (
+                    user_id BIGINT PRIMARY KEY,
+                    balance REAL NOT NULL DEFAULT 0.0
+                )
+            """)
+            conn.commit()
 
 def get_balance(user_id: int) -> float:
     with db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
-        return result[0] if result else 0.0
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT balance FROM balances WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            return result[0] if result else 0.0
 
 def add_balance(user_id: int, amount: float):
     with db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-        INSERT OR REPLACE INTO balances (user_id, balance)
-        VALUES (?, COALESCE(
-            (SELECT balance FROM balances WHERE user_id = ?), 0) + ?)
-        """, (user_id, user_id, amount))
-        conn.commit()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO balances (user_id, balance)
+                VALUES (%s, %s)
+                ON CONFLICT(user_id) DO UPDATE SET balance = balances.balance + EXCLUDED.balance
+            """, (user_id, amount))
+            conn.commit()
 
 def deduct_balance(user_id: int, amount: float) -> bool:
     with db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
-        
-        if not result or result[0] < amount:
-            return False
-            
-        cursor.execute("""
-        UPDATE balances SET balance = balance - ? 
-        WHERE user_id = ? AND balance >= ?
-        """, (amount, user_id, amount))
-        conn.commit()
-        return cursor.rowcount > 0
-
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT balance FROM balances WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            if not result or result[0] < amount:
+                return False
+            cursor.execute("UPDATE balances SET balance = balance - %s WHERE user_id = %s", (amount, user_id))
+            conn.commit()
+            return True
 def create_invoice(user_id: int, amount_usd: float, currency: str) -> dict:
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {
