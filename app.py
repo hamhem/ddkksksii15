@@ -17,22 +17,28 @@ bot = Bot(token=BOT_TOKEN)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# SQLite database path inside writable Render mount
+# Database Configuration
 DB_PATH = "/data/users.db"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
-conn.commit()
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
 
 def add_balance(user_id: int, amount: float):
-    cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    if result is None:
-        cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
-    else:
-        cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
+        result = cursor.fetchone()
+        if result is None:
+            cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
+        else:
+            cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 @app.route('/nowpayments_callback', methods=['POST'])
 def nowpayments_callback():
@@ -78,5 +84,14 @@ def nowpayments_callback():
     return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
+    # Initialize database table if not exists
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
+        conn.commit()
+    finally:
+        conn.close()
+
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
