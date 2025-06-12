@@ -285,11 +285,17 @@ async def main():
     try:
         with db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='balances'")
-            if not cursor.fetchone():
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'balances'
+                )
+            """)
+            if not cursor.fetchone()[0]:
                 logger.error("Balances table not created!")
             else:
                 logger.info("Database initialized successfully")
+
     except Exception as e:
         logger.error(f"Database connection failed: {e}")
         raise
