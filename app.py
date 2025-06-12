@@ -1,97 +1,115 @@
-import sys
-import time
-import asyncio
-import logging
-import requests
-import sqlite3
 import os
+import sqlite3
+import asyncio
 from flask import Flask, request, jsonify
 from telegram import Bot
 
 app = Flask(__name__)
 
-BOT_TOKEN = '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s'
-OWNER_ID = 6746140279  # Admin ID for notifications
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s')
+OWNER_ID = int(os.getenv('OWNER_ID', '6746140279'))
+DB_PATH = os.getenv('DB_PATH', '/data/users.db')
+
+# Initialize bot
 bot = Bot(token=BOT_TOKEN)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Database Configuration
-DB_PATH = "/data/users.db"
-
-def get_db_connection():
+# Database setup with connection pooling
+def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA busy_timeout = 30000")  # 30 second timeout
+    conn.row_factory = sqlite3.Row
     return conn
 
-def add_balance(user_id: int, amount: float):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
-        if result is None:
-            cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
-        else:
-            cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+def init_db():
+    with get_db() as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS balances (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL NOT NULL DEFAULT 0.0
+        )
+        """)
         conn.commit()
-    finally:
-        conn.close()
 
 @app.route('/nowpayments_callback', methods=['POST'])
-def nowpayments_callback():
-    data = request.json
-    logger.info(f"Received callback: {data}")
-
-    status = data.get("payment_status")
-    order_id = data.get("order_id")
-    amount = float(data.get("price_amount", 0))
-
-    if not order_id or not status:
-        return jsonify({"error": "Missing fields"}), 400
-
-    if not order_id.startswith("c2s_"):
-        return jsonify({"error": "Invalid order_id"}), 400
-
+def payment_callback():
     try:
-        user_id = int(order_id.split("_")[1])
-    except ValueError:
-        return jsonify({"error": "Invalid user_id in order_id"}), 400
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data received"}), 400
 
-    if status == "finished":
-        add_balance(user_id, amount)
+        logger.info(f"Received callback data: {data}")
 
+        # Validate required fields
+        required_fields = ['payment_status', 'order_id', 'price_amount']
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": "Missing required fields"}), 400
+
+        status = data['payment_status']
+        order_id = data['order_id']
+        amount = float(data['price_amount'])
+
+        # Validate order ID format
+        if not order_id.startswith('c2s_'):
+            return jsonify({"error": "Invalid order ID format"}), 400
+
+        try:
+            user_id = int(order_id.split('_')[1])
+        except (IndexError, ValueError):
+            return jsonify({"error": "Invalid user ID in order ID"}), 400
+
+        if status.lower() == 'finished':
+            # Update balance in transaction
+            with get_db() as conn:
+                cursor = conn.cursor()
+                # Use INSERT OR REPLACE to handle both new and existing users
+                cursor.execute("""
+                INSERT OR REPLACE INTO balances (user_id, balance)
+                VALUES (?, COALESCE(
+                    (SELECT balance FROM balances WHERE user_id = ?), 0) + ?)
+                """, (user_id, user_id, amount))
+                conn.commit()
+
+                # Verify update
+                cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
+                updated_balance = cursor.fetchone()['balance']
+                logger.info(f"Updated balance for user {user_id}: {updated_balance}")
+
+            # Send notifications
+            asyncio.run(notify_parties(user_id, amount))
+            
+            return jsonify({
+                "status": "success",
+                "user_id": user_id,
+                "new_balance": updated_balance
+            })
+
+        return jsonify({"status": "payment_not_completed"})
+
+    except Exception as e:
+        logger.error(f"Error processing callback: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+async def notify_parties(user_id, amount):
+    try:
         # Notify admin
-        try:
-            asyncio.run(bot.send_message(
-                chat_id=OWNER_ID,
-                text=f"💸 Deposit of ${amount:.2f} received from user ID {user_id}!"
-            ))
-        except Exception as e:
-            logger.error(f"Failed to notify admin: {e}")
-
+        await bot.send_message(
+            chat_id=OWNER_ID,
+            text=f"💳 New deposit: ${amount:.2f} from user {user_id}"
+        )
+        
         # Notify user
-        try:
-            asyncio.run(bot.send_message(
-                chat_id=user_id,
-                text=f"✅ Your deposit of ${amount:.2f} was successful and has been added to your balance!"
-            ))
-        except Exception as e:
-            logger.error(f"Failed to notify user {user_id}: {e}")
-
-    return jsonify({"status": "ok"})
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"✅ Your deposit of ${amount:.2f} was successful!"
+        )
+    except Exception as e:
+        logger.error(f"Notification failed: {str(e)}")
 
 if __name__ == '__main__':
-    # Initialize database table if not exists
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
-        conn.commit()
-    finally:
-        conn.close()
-
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    # Initialize database
+    init_db()
+    
+    # Start Flask app
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
