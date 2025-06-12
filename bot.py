@@ -47,12 +47,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-os.makedirs("data", exist_ok=True)
-DB_PATH = os.path.join("data", "users.db")
+DB_PATH = "/data/users.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
 conn.commit()
+
 def get_balance(user_id: int) -> float:
     cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
