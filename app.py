@@ -17,11 +17,9 @@ bot = Bot(token=BOT_TOKEN)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Ensure /data directory exists
-os.makedirs("data", exist_ok=True)
 
-# SQLite database path inside writable /data
-DB_PATH = os.path.join("data", "users.db")
+# SQLite database path inside writable Render mount
+DB_PATH = "/data/users.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
