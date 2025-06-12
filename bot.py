@@ -285,6 +285,14 @@ async def handle_identity_choice(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def main():
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
+        conn.commit()
+    finally:
+        conn.close()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[
