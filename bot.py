@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 os.makedirs("/data", exist_ok=True)
 
-conn = sqlite3.connect("/data/users.db", check_same_thread=False)
+sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
 conn.commit()
