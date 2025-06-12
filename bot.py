@@ -217,27 +217,61 @@ async def handle_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_say_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['original_message'] = update.message
     price = 0
+
     if update.message.text:
         price = len(update.message.text) * PRICE_LIST['text']
+
     elif update.message.voice:
-        price = update.message.voice.duration * PRICE_LIST['voice']
+        duration = update.message.voice.duration
+        if duration <= 0:
+            await update.message.reply_text("❌ Invalid voice message (0 seconds).")
+            return ConversationHandler.END
+        price = duration * PRICE_LIST['voice']
+
+    elif update.message.audio:
+        duration = update.message.audio.duration
+        if duration <= 0:
+            await update.message.reply_text("❌ Invalid audio file (0 seconds).")
+            return ConversationHandler.END
+        price = duration * PRICE_LIST['voice']
+
     elif update.message.video:
-        price = update.message.video.duration * PRICE_LIST['video']
+        duration = update.message.video.duration
+        if duration <= 0:
+            await update.message.reply_text("❌ Invalid video (0 seconds).")
+            return ConversationHandler.END
+        price = duration * PRICE_LIST['video']
+
     elif update.message.photo:
         price = PRICE_LIST['image']
+
+    elif update.message.animation:  # GIF support
+        price = PRICE_LIST['image']
+
+    else:
+        await update.message.reply_text("❌ Unsupported message type.")
+        return ConversationHandler.END
+
     context.user_data['pending_price'] = price
+
     await update.message.reply_text(
-        "How do you want to be shown?",
+        f"🧾 This message will cost you ${price:.2f}. Continue?",
         reply_markup=InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("Anonymous", callback_data='identity_anon'),
-                InlineKeyboardButton("Full Name", callback_data='identity_fullname'),
-                InlineKeyboardButton("@Username", callback_data='identity_username')
-            ],
-            [InlineKeyboardButton("❌ Cancel", callback_data='cancel')]
+                InlineKeyboardButton("Yes", callback_data='confirm_price'),
+                InlineKeyboardButton("Cancel", callback_data='cancel')
+            ]
         ])
     )
-    return ConversationHandler.END
+    return CONFIRM_PRICE
+
+
+
+async def confirm_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    return await handle_identity_choice(update, context)
+
 
 async def handle_identity_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
