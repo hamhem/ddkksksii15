@@ -5,6 +5,7 @@ import asyncio
 import logging
 import requests
 import sqlite3
+from contextlib import contextmanager
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -49,50 +50,58 @@ logger = logging.getLogger(__name__)
 # Database Configuration
 DB_PATH = "/data/users.db"
 
-def get_db_connection():
+@contextmanager
+def db_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
+    conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+def init_db():
+    with db_connection() as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS balances (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL NOT NULL DEFAULT 0.0
+        )
+        """)
+        conn.commit()
 
 def get_balance(user_id: int) -> float:
-    conn = get_db_connection()
-    try:
+    with db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
         result = cursor.fetchone()
         return result[0] if result else 0.0
-    finally:
-        conn.close()
 
 def add_balance(user_id: int, amount: float):
-    conn = get_db_connection()
-    try:
+    with db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
-        if result is None:
-            cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
-        else:
-            cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        cursor.execute("""
+        INSERT OR REPLACE INTO balances (user_id, balance)
+        VALUES (?, COALESCE(
+            (SELECT balance FROM balances WHERE user_id = ?), 0) + ?)
+        """, (user_id, user_id, amount))
         conn.commit()
-    finally:
-        conn.close()
 
 def deduct_balance(user_id: int, amount: float) -> bool:
-    conn = get_db_connection()
-    try:
+    with db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
         result = cursor.fetchone()
+        
         if not result or result[0] < amount:
             return False
             
-        cursor.execute("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+        cursor.execute("""
+        UPDATE balances SET balance = balance - ? 
+        WHERE user_id = ? AND balance >= ?
+        """, (amount, user_id, amount))
         conn.commit()
-        return True
-    finally:
-        conn.close()
+        return cursor.rowcount > 0
 
 def create_invoice(user_id: int, amount_usd: float, currency: str) -> dict:
     url = "https://api.nowpayments.io/v1/invoice"
@@ -285,15 +294,26 @@ async def handle_identity_choice(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def main():
-    conn = get_db_connection()
+    # Initialize database (using the context manager version)
+    init_db()
+    
+    # Verify database connection
     try:
-        cursor = conn.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
-        conn.commit()
-    finally:
-        conn.close()
+        with db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='balances'")
+            if not cursor.fetchone():
+                logger.error("Balances table not created!")
+            else:
+                logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        raise
 
+    # Build application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Conversation handler setup
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
@@ -308,10 +328,21 @@ async def main():
         },
         fallbacks=[CallbackQueryHandler(button_handler, pattern='^cancel$')]
     )
+    
+    # Add handlers
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(handle_identity_choice, pattern='^identity_'))
+    
+    # Add error handler
+    app.add_error_handler(error_handler)
+    
     logger.info("✅ Bot is running...")
     await app.run_polling()
+
+def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
+    if update.effective_message:
+        update.effective_message.reply_text("⚠️ An error occurred. Please try again.")
 
 if __name__ == '__main__':
     import nest_asyncio
@@ -319,4 +350,3 @@ if __name__ == '__main__':
 
     nest_asyncio.apply()
     asyncio.get_event_loop().run_until_complete(main())
-
