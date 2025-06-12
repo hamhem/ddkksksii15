@@ -1,45 +1,72 @@
 from flask import Flask, request
-import requests
 import sqlite3
-import os
+import logging
+import requests
 
 app = Flask(__name__)
 
+# === CONFIG ===
 BOT_TOKEN = '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s'
-OWNER_ID = 6746140279
-DB_PATH = 'users.db'
+OWNER_ID = 6746140279  # your Telegram user ID
 
-def add_balance(user_id: int, amount: float):
-    conn = sqlite3.connect(DB_PATH)
+# === LOGGING ===
+logging.basicConfig(level=logging.INFO)
+
+# === DATABASE INIT (optional safety) ===
+def init_db():
+    conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-    if cursor.fetchone():
-        cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-    else:
-        cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
+    cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
     conn.commit()
     conn.close()
 
-def send_admin_alert(user_id: int, amount: float, currency: str):
-    message = f"💸 User {user_id} just deposited {amount:.2f} {currency.upper()}!"
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": OWNER_ID,
-        "text": message
-    })
+init_db()
 
-@app.route('/nowpayments_callback', methods=['POST'])
-def nowpayments_callback():
+# === IPN CALLBACK ROUTE ===
+@app.route('/ipn', methods=['POST'])
+def nowpayments_ipn():
     data = request.json
-    if data.get("payment_status") == "confirmed":
-        order_id = data.get("order_id")  # format: c2s_<user_id>_<timestamp>
-        currency = data.get("pay_currency")
-        amount = float(data.get("pay_amount", 0))
-        user_id = int(order_id.split('_')[1])
-        add_balance(user_id, amount)
-        send_admin_alert(user_id, amount, currency)
-    return '', 200
+    logging.info(f"Received IPN: {data}")
 
+    status = data.get("payment_status")
+    order_id = data.get("order_id")
+    amount = data.get("price_amount")
+
+    if not order_id or not amount or status != "finished":
+        return "Ignored", 200
+
+    try:
+        # Extract user_id from order_id format: c2s_userid_timestamp
+        user_id = int(order_id.split("_")[1])
+        amount = float(amount)
+
+        conn = sqlite3.connect("users.db")
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO balances (user_id, balance) VALUES (?, ?)", (user_id, 0))
+        cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        conn.commit()
+        conn.close()
+
+        # Telegram notify owner
+        requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            params={
+                "chat_id": OWNER_ID,
+                "text": f"💸 Deposit of ${amount:.2f} received from user ID {user_id}!"
+            }
+        )
+
+    except Exception as e:
+        logging.error(f"Error processing IPN: {e}")
+        return "Error", 500
+
+    return "OK", 200
+
+# === ROOT TEST ===
+@app.route('/')
+def index():
+    return "NOWPayments IPN Listener is running!"
+
+# === START FLASK ===
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))  # Render sets PORT automatically
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=5000)
