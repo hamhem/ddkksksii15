@@ -1,53 +1,56 @@
-from flask import Flask, request
-import sqlite3
+import os
 import logging
+import sqlite3
+from flask import Flask, request, jsonify
 import requests
 
 app = Flask(__name__)
 
-# === CONFIG ===
 BOT_TOKEN = '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s'
-OWNER_ID = 6746140279  # your Telegram user ID
+OWNER_ID = 6746140279  # Admin ID for notifications
 
-# === LOGGING ===
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# === DATABASE INIT (optional safety) ===
-def init_db():
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
+# Initialize database
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
+conn.commit()
+
+def add_balance(user_id: int, amount: float):
+    cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    if result is None:
+        cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
+    else:
+        cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
     conn.commit()
-    conn.close()
 
-init_db()
-
-# === IPN CALLBACK ROUTE ===
-@app.route('/ipn', methods=['POST'])
-def nowpayments_ipn():
+@app.route('/nowpayments_callback', methods=['POST'])
+def nowpayments_callback():
     data = request.json
-    logging.info(f"Received IPN: {data}")
+    logger.info(f"Received callback: {data}")
 
     status = data.get("payment_status")
     order_id = data.get("order_id")
-    amount = data.get("price_amount")
+    amount = float(data.get("price_amount", 0))
 
-    if not order_id or not amount or status != "finished":
-        return "Ignored", 200
+    if not order_id or not status:
+        return jsonify({"error": "Missing fields"}), 400
+
+    if not order_id.startswith("c2s_"):
+        return jsonify({"error": "Invalid order_id"}), 400
 
     try:
-        # Extract user_id from order_id format: c2s_userid_timestamp
         user_id = int(order_id.split("_")[1])
-        amount = float(amount)
+    except ValueError:
+        return jsonify({"error": "Invalid user_id in order_id"}), 400
 
-        conn = sqlite3.connect("users.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR IGNORE INTO balances (user_id, balance) VALUES (?, ?)", (user_id, 0))
-        cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        conn.commit()
-        conn.close()
+    if status == "finished":
+        add_balance(user_id, amount)
 
-        # Telegram notify owner
+        # Notify admin
         requests.get(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             params={
@@ -56,17 +59,17 @@ def nowpayments_ipn():
             }
         )
 
-    except Exception as e:
-        logging.error(f"Error processing IPN: {e}")
-        return "Error", 500
+        # Notify user
+        requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            params={
+                "chat_id": user_id,
+                "text": f"✅ Your deposit of ${amount:.2f} was successful and has been added to your balance!"
+            }
+        )
 
-    return "OK", 200
+    return jsonify({"status": "ok"})
 
-# === ROOT TEST ===
-@app.route('/')
-def index():
-    return "NOWPayments IPN Listener is running!"
-
-# === START FLASK ===
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
