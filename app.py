@@ -1,6 +1,7 @@
 from flask import Flask, request
 import requests
 import sqlite3
+import os
 
 app = Flask(__name__)
 
@@ -38,3 +39,7 @@ def nowpayments_callback():
         add_balance(user_id, amount)
         send_admin_alert(user_id, amount, currency)
     return '', 200
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))  # Render sets PORT automatically
+    app.run(host='0.0.0.0', port=port)
