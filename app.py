@@ -23,8 +23,10 @@ def add_balance(user_id: int, amount: float):
     result = cursor.fetchone()
     if result is None:
         cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
+        print(f"[DB] New user {user_id} added with ${amount}")
     else:
         cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        print(f"[DB] User {user_id} balance increased by ${amount}")
     conn.commit()
 
 @app.route('/nowpayments_callback', methods=['POST'])
@@ -55,7 +57,7 @@ def nowpayments_callback():
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             params={
                 "chat_id": OWNER_ID,
-                "text": f"💸 Deposit of ${amount:.2f} received from user ID {user_id}!"
+                "text": f"\U0001f4b8 Deposit of ${amount:.2f} received from user ID {user_id}!"
             }
         )
 
@@ -64,11 +66,17 @@ def nowpayments_callback():
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             params={
                 "chat_id": user_id,
-                "text": f"✅ Your deposit of ${amount:.2f} was successful and has been added to your balance!"
+                "text": f"\u2705 Your deposit of ${amount:.2f} was successful and has been added to your balance!"
             }
         )
 
     return jsonify({"status": "ok"})
+
+@app.route('/debug_balance/<int:user_id>')
+def debug_balance(user_id):
+    cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    return jsonify({"user_id": user_id, "balance": result[0] if result else 0.0})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
