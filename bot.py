@@ -46,31 +46,53 @@ CURRENCIES = [
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
+# Database Configuration
 DB_PATH = "/data/users.db"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS balances (user_id INTEGER PRIMARY KEY, balance REAL)")
-conn.commit()
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
 
 def get_balance(user_id: int) -> float:
-    cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    return result[0] if result else 0.0
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
+        result = cursor.fetchone()
+        return result[0] if result else 0.0
+    finally:
+        conn.close()
 
 def add_balance(user_id: int, amount: float):
-    if get_balance(user_id) == 0.0:
-        cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
-    else:
-        cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
+        result = cursor.fetchone()
+        if result is None:
+            cursor.execute("INSERT INTO balances (user_id, balance) VALUES (?, ?)", (user_id, amount))
+        else:
+            cursor.execute("UPDATE balances SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 def deduct_balance(user_id: int, amount: float) -> bool:
-    if get_balance(user_id) >= amount:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM balances WHERE user_id = ?", (user_id,))
+        result = cursor.fetchone()
+        if not result or result[0] < amount:
+            return False
+            
         cursor.execute("UPDATE balances SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
         conn.commit()
         return True
-    return False
+    finally:
+        conn.close()
 
 def create_invoice(user_id: int, amount_usd: float, currency: str) -> dict:
     url = "https://api.nowpayments.io/v1/invoice"
