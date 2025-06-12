@@ -12,7 +12,6 @@ OWNER_ID = 6746140279  # Admin ID for notifications
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-os.makedirs("/data", exist_ok=True)
 # Initialize database
 sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
