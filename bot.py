@@ -16,6 +16,8 @@ from telegram.error import BadRequest
 if sys.platform.startswith('win'):
     import nest_asyncio
     nest_asyncio.apply()
+    
+print("BOT DB EXISTS:", os.path.exists("/data/users.db"))
 
 BOT_TOKEN = '7858846348:AAFJU4XdTtwU59jPEHXvd-1JFc8s9BIng2s'
 NOWPAYMENTS_API_KEY = '30ZYG00-WCM4EGC-Q7Y4QSS-28GQ865'
