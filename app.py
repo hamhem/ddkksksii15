@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Ensure /data directory exists
 os.makedirs("data", exist_ok=True)
 
-# Use a shared SQLite DB file
+# SQLite database path inside writable /data
 DB_PATH = os.path.join("data", "users.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
@@ -61,13 +61,19 @@ def nowpayments_callback():
 
         # Notify admin
         try:
-            bot.send_message(chat_id=OWNER_ID, text=f"💸 Deposit of ${amount:.2f} received from user ID {user_id}!")
+            asyncio.run(bot.send_message(
+                chat_id=OWNER_ID,
+                text=f"💸 Deposit of ${amount:.2f} received from user ID {user_id}!"
+            ))
         except Exception as e:
             logger.error(f"Failed to notify admin: {e}")
 
         # Notify user
         try:
-            bot.send_message(chat_id=user_id, text=f"✅ Your deposit of ${amount:.2f} was successful and has been added to your balance!")
+            asyncio.run(bot.send_message(
+                chat_id=user_id,
+                text=f"✅ Your deposit of ${amount:.2f} was successful and has been added to your balance!"
+            ))
         except Exception as e:
             logger.error(f"Failed to notify user {user_id}: {e}")
 
